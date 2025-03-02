@@ -1,30 +1,31 @@
-#include <ros/ros.h>
-#include <nav_msgs/OccupancyGrid.h>
-#include <sensor_msgs/Image.h>
-#include <sensor_msgs/RegionOfInterest.h>
-#include <sensor_msgs/LaserScan.h>
+#include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/region_of_interest.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
-#include <geometry_msgs/TransformStamped.h>
-#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
-#include <std_msgs/String.h>
-#include <std_srvs/Empty.h>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <vector>
 #include <cmath>
 
-nav_msgs::OccupancyGrid map_msg;
+nav_msgs::msg::OccupancyGrid map_msg;
 cv::Mat map_cropped;
 cv::Mat map_temp;
 cv::Mat map_match;
-sensor_msgs::RegionOfInterest map_roi_info;
+sensor_msgs::msg::RegionOfInterest map_roi_info;
 std::vector<cv::Point2f> scan_points;
 std::vector<cv::Point2f> best_transform;
-ros::ServiceClient clear_costmaps_client;
+rclcpp::Client<std_srvs::srv::Empty>::SharedPtr clear_costmaps_client;
 std::string base_frame;
 std::string odom_frame;
 std::string laser_frame;
@@ -37,19 +38,19 @@ int clear_countdown = -1;
 int scan_count = 0;
 
 // 初始姿态回调函数
-void initialPoseCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &msg)
+void initialPoseCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
     try
     {
-        static tf2_ros::Buffer tfBuffer;
+        static tf2_ros::Buffer tfBuffer(rclcpp::Clock::make_shared());
         static tf2_ros::TransformListener tfListener(tfBuffer);
 
         // 1. 查询从 base_frame 到 laser_frame 的转换
-        geometry_msgs::TransformStamped transformStamped =
-            tfBuffer.lookupTransform(base_frame, laser_frame, ros::Time(0), ros::Duration(1.0));
+        geometry_msgs::msg::TransformStamped transformStamped =
+            tfBuffer.lookupTransform(base_frame, laser_frame, tf2::TimePointZero, tf2::durationFromSec(1.0));
 
         // 2. 创建一个 stamped pose 用于转换
-        geometry_msgs::PoseStamped base_pose, laser_pose;
+        geometry_msgs::msg::PoseStamped base_pose, laser_pose;
         base_pose.header = msg->header;
         base_pose.pose = msg->pose.pose;
 
@@ -80,14 +81,14 @@ void initialPoseCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPt
     }
     catch (tf2::TransformException &ex)
     {
-        ROS_WARN("无法获取从 %s 到 %s 的转换: %s", base_frame.c_str(), laser_frame.c_str(), ex.what());
+        RCLCPP_WARN(rclcpp::get_logger("lidar_loc"), "无法获取从 %s 到 %s 的转换: %s", base_frame.c_str(), laser_frame.c_str(), ex.what());
     }
 }
 
 void crop_map();
 void processMap();
 
-void mapCallback(const nav_msgs::OccupancyGrid::ConstPtr &msg)
+void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
 {
     map_msg = *msg;
     crop_map();
@@ -97,8 +98,8 @@ void mapCallback(const nav_msgs::OccupancyGrid::ConstPtr &msg)
 void crop_map()
 {
     // 显示地图信息
-    std_msgs::Header header = map_msg.header;
-    nav_msgs::MapMetaData info = map_msg.info;
+    std_msgs::msg::Header header = map_msg.header;
+    nav_msgs::msg::MapMetaData info = map_msg.info;
 
     // 用来统计地图有效区域的变量
     int xMax, xMin, yMax, yMin;
@@ -167,21 +168,21 @@ void crop_map()
     map_roi_info.width = new_width;
     map_roi_info.height = new_height;
 
-    geometry_msgs::PoseWithCovarianceStamped init_pose;
+    geometry_msgs::msg::PoseWithCovarianceStamped init_pose;
     init_pose.pose.pose.position.x = 0.0;
     init_pose.pose.pose.position.y = 0.0;
-    init_pose.pose.pose.position.y = 0.0;
+    init_pose.pose.pose.position.z = 0.0;
     init_pose.pose.pose.orientation.x = 0.0;
     init_pose.pose.pose.orientation.y = 0.0;
     init_pose.pose.pose.orientation.z = 0.0;
     init_pose.pose.pose.orientation.w = 1.0;
 
-    geometry_msgs::PoseWithCovarianceStamped::ConstPtr init_pose_ptr(new geometry_msgs::PoseWithCovarianceStamped(init_pose));
+    auto init_pose_ptr = std::make_shared<geometry_msgs::msg::PoseWithCovarianceStamped>(init_pose);
     initialPoseCallback(init_pose_ptr);
 }
 
 bool check(float x, float y, float yaw);
-void scanCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
+void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 {
     scan_points.clear();
     double angle = msg->angle_min;
@@ -198,7 +199,7 @@ void scanCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
     if (scan_count == 0)
         scan_count++;
 
-    while (ros::ok())
+    while (rclcpp::ok())
     {
         if (!map_cropped.empty())
         {
@@ -274,8 +275,8 @@ void scanCallback(const sensor_msgs::LaserScan::ConstPtr &msg)
         clear_countdown--;
     if (clear_countdown == 0)
     {
-        std_srvs::Empty srv;
-        clear_costmaps_client.call(srv);
+        auto request = std::make_shared<std_srvs::srv::Empty::Request>();
+        auto result_future = clear_costmaps_client->async_send_request(request);
     }
 }
 
@@ -374,7 +375,7 @@ void pose_tf()
     if (map_cropped.empty() || map_msg.data.empty())
         return;
 
-    static tf2_ros::Buffer tfBuffer;
+    static tf2_ros::Buffer tfBuffer(rclcpp::Clock::make_shared());
     static tf2_ros::TransformListener tfListener(tfBuffer);
 
     // 1. 计算在裁剪地图中的实际米制坐标
@@ -397,14 +398,14 @@ void pose_tf()
     double base_y = y_meters;
 
     // 6. 查询 odom 到 base_frame 的变换
-    geometry_msgs::TransformStamped odom_to_base;
+    geometry_msgs::msg::TransformStamped odom_to_base;
     try
     {
-        odom_to_base = tfBuffer.lookupTransform(odom_frame, laser_frame, ros::Time(0));
+        odom_to_base = tfBuffer.lookupTransform(odom_frame, laser_frame, tf2::TimePointZero);
     }
     catch (tf2::TransformException &ex)
     {
-        ROS_WARN("%s", ex.what());
+        RCLCPP_WARN(rclcpp::get_logger("lidar_loc"), "%s", ex.what());
         return;
     }
 
@@ -417,10 +418,10 @@ void pose_tf()
     tf2::Transform map_to_odom = map_to_base * odom_to_base_tf2.inverse();
 
     // 8. 发布 map 到 odom 的变换
-    static tf2_ros::TransformBroadcaster br;
-    geometry_msgs::TransformStamped map_to_odom_msg;
+    static tf2_ros::TransformBroadcaster br(rclcpp::Node::make_shared("lidar_loc"));
+    geometry_msgs::msg::TransformStamped map_to_odom_msg;
 
-    map_to_odom_msg.header.stamp = ros::Time::now();
+    map_to_odom_msg.header.stamp = rclcpp::Clock::make_shared()->now();
     map_to_odom_msg.header.frame_id = "map";
     map_to_odom_msg.child_frame_id = odom_frame;
     map_to_odom_msg.transform = tf2::toMsg(map_to_odom);
@@ -440,30 +441,34 @@ void pose_tf()
 
 int main(int argc, char **argv)
 {
-    setlocale(LC_ALL, "");
-    ros::init(argc, argv, "lidar_loc");
+    rclcpp::init(argc, argv);
+    auto node = rclcpp::Node::make_shared("lidar_loc");
 
     // 读取参数
-    ros::NodeHandle private_nh("~");
-    private_nh.param<std::string>("base_frame", base_frame, "base_footprint");
-    private_nh.param<std::string>("odom_frame", odom_frame, "odom");
-    private_nh.param<std::string>("laser_frame", laser_frame, "laser");
-    private_nh.param<std::string>("laser_topic", laser_topic, "scan");
+    node->declare_parameter("base_frame", "base_footprint");
+    node->declare_parameter("odom_frame", "odom");
+    node->declare_parameter("laser_frame", "laser");
+    node->declare_parameter("laser_topic", "scan");
 
-    ros::NodeHandle nh;
-    ros::Subscriber map_sub = nh.subscribe("map", 1, mapCallback);
-    ros::Subscriber scan_sub = nh.subscribe(laser_topic, 1, scanCallback);
-    ros::Subscriber initial_pose_sub = nh.subscribe("initialpose", 1, initialPoseCallback);
-    clear_costmaps_client = nh.serviceClient<std_srvs::Empty>("move_base/clear_costmaps");
+    node->get_parameter("base_frame", base_frame);
+    node->get_parameter("odom_frame", odom_frame);
+    node->get_parameter("laser_frame", laser_frame);
+    node->get_parameter("laser_topic", laser_topic);
 
-    ros::Rate rate(30); // tf发送频率
+    auto map_sub = node->create_subscription<nav_msgs::msg::OccupancyGrid>("map", 1, mapCallback);
+    auto scan_sub = node->create_subscription<sensor_msgs::msg::LaserScan>(laser_topic, 1, scanCallback);
+    auto initial_pose_sub = node->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>("initialpose", 1, initialPoseCallback);
+    clear_costmaps_client = node->create_client<std_srvs::srv::Empty>("move_base/clear_costmaps");
 
-    while (ros::ok())
+    rclcpp::Rate rate(30); // tf发送频率
+
+    while (rclcpp::ok())
     {
         pose_tf();
-        ros::spinOnce();
+        rclcpp::spin_some(node);
         rate.sleep();
     }
 
+    rclcpp::shutdown();
     return 0;
 }
